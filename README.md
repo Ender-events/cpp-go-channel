@@ -9,4 +9,6 @@ A very basic channel with manually coroutine resume
 
 ### simple\_symmetric\_transfer.cpp
 
-Channel with symmetric coroutine control transfer
+Channel with
+* symmetric coroutine control transfer
+* reduce dynamic allocation with intrusive list

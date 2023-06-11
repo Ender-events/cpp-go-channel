@@ -10,14 +10,73 @@
 
 #include "lazy.hh"
 
+template <typename Derived>
+class IntrusiveNode
+{
+public:
+    Derived* next = nullptr;
+};
+
+template <typename T>
+class FIFOList
+{
+public:
+    FIFOList() : head(nullptr), tail(nullptr)
+    {}
+
+    void push(T* newNode)
+    {
+        if (tail == nullptr)
+        {
+            head = newNode;
+            tail = newNode;
+        }
+        else
+        {
+            tail->next = newNode;
+            tail = newNode;
+        }
+    }
+
+    T* pop()
+    {
+        if (head == nullptr)
+        {
+            return nullptr;
+        }
+
+        T* elem = head;
+        head = head->next;
+        if (head == nullptr)
+        {
+            // The list becomes empty after the pop
+            tail = nullptr;
+        }
+
+        return elem;
+    }
+
+    bool empty()
+    {
+        return head == nullptr;
+    }
+
+private:
+    T* head;
+    T* tail;
+};
+
 template <typename Type>
 class channel
 {
 public:
     channel(std::size_t buffer_size = 0) : buffer_size_{buffer_size}
     {}
-    struct async_recv
+    struct async_recv : public IntrusiveNode<async_recv>
     {
+        async_recv(channel<Type>& channel) : channel_{channel}
+        {}
+
         bool await_ready() const
         {
             return !channel_.fifo_.empty();
@@ -25,11 +84,10 @@ public:
         std::coroutine_handle<> await_suspend(std::coroutine_handle<> handle)
         {
             handle_ = handle;
-            channel_.receivers_.insert(channel_.receivers_.end(), this);
+            channel_.receivers_.push(this);
             if (!channel_.senders_.empty())
             {
-                auto send = channel_.senders_.front();
-                channel_.senders_.pop_front();
+                auto send = channel_.senders_.pop();
                 return send->handle_;
             }
             return std::noop_coroutine();
@@ -53,8 +111,11 @@ public:
         return async_recv{*this};
     }
 
-    struct async_send
+    struct async_send : public IntrusiveNode<async_send>
     {
+        async_send(channel<Type>& channel) : channel_{channel}
+        {}
+
         bool await_ready() const
         {
             return channel_.full();
@@ -62,11 +123,10 @@ public:
         std::coroutine_handle<> await_suspend(std::coroutine_handle<> handle)
         {
             handle_ = handle;
-            channel_.senders_.insert(channel_.senders_.end(), this);
+            channel_.senders_.push(this);
             if (!channel_.receivers_.empty())
             {
-                auto recv = channel_.receivers_.front();
-                channel_.receivers_.pop_front();
+                auto recv = channel_.receivers_.pop();
                 return recv->handle_;
             }
             return std::noop_coroutine();
@@ -98,14 +158,12 @@ public:
     {
         while ((closed_ || !fifo_.empty()) && !receivers_.empty())
         {
-            auto recv = receivers_.front();
-            receivers_.pop_front();
+            auto recv = receivers_.pop();
             recv->handle_.resume();
         }
         while ((closed_ || !full()) && !senders_.empty())
         {
-            auto send = senders_.front();
-            senders_.pop_front();
+            auto send = senders_.pop();
             send->handle_.resume();
         }
     }
@@ -113,12 +171,12 @@ public:
 private:
     bool full()
     {
-        return fifo_.size() < buffer_size_ + receivers_.size();
+        return fifo_.size() < buffer_size_;
     }
 
     std::size_t buffer_size_;
-    std::list<async_recv*> receivers_{};
-    std::list<async_send*> senders_{};
+    FIFOList<async_recv> receivers_{};
+    FIFOList<async_send> senders_{};
     std::list<Type> fifo_{};
     bool closed_{false};
 };
