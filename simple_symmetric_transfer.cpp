@@ -1,9 +1,11 @@
+#include <cassert>
 #include <coroutine>
 #include <cstddef>
+#include <deque>
 #include <iostream>
 #include <iterator>
-#include <list>
 #include <source_location>
+#include <stdexcept>
 #include <string_view>
 #include <tuple>
 #include <utility>
@@ -79,12 +81,17 @@ public:
 
         bool await_ready() const
         {
-            return !channel_.fifo_.empty();
+            return !channel_.fifo_.empty() || !channel_.senders_.empty();
         }
         std::coroutine_handle<> await_suspend(std::coroutine_handle<> handle)
         {
             handle_ = handle;
             channel_.receivers_.push(this);
+            if (!channel_.consumeds_.empty())
+            {
+                auto send = channel_.consumeds_.pop();
+                return send->handle_;
+            }
             if (!channel_.senders_.empty())
             {
                 auto send = channel_.senders_.pop();
@@ -94,13 +101,25 @@ public:
         }
         auto await_resume()
         {
-            if (channel_.closed_ && channel_.fifo_.empty())
+            if (!channel_.fifo_.empty())
             {
-                return std::make_tuple(Type{}, false);
+                Type t = std::move(channel_.fifo_.front());
+                channel_.fifo_.pop_front();
+                return std::make_tuple(std::move(t), true);
             }
-            Type t = std::move(channel_.fifo_.front());
-            channel_.fifo_.pop_front();
-            return std::make_tuple(std::move(t), true);
+            if (!channel_.senders_.empty())
+            {
+                auto send = channel_.senders_.pop();
+                Type t = std::move(send->data_.value());
+                send->data_.reset();
+                channel_.consumeds_.push(send);
+                return std::make_tuple(std::move(t), true);
+            }
+            if (!channel_.closed_)
+            {
+                throw std::runtime_error("unexpected await resume");
+            }
+            return std::make_tuple(Type{}, false);
         }
 
         channel<Type>& channel_;
@@ -113,12 +132,18 @@ public:
 
     struct async_send : public IntrusiveNode<async_send>
     {
-        async_send(channel<Type>& channel) : channel_{channel}
+        async_send(channel<Type>& channel, Type&& data) : channel_{channel}, data_{std::move(data)}
         {}
 
-        bool await_ready() const
+        bool await_ready()
         {
-            return channel_.full();
+            if (channel_.full())
+            {
+                return false;
+            }
+            channel_.fifo_.push_back(std::move(data_.value()));
+            data_.reset();
+            return true;
         }
         std::coroutine_handle<> await_suspend(std::coroutine_handle<> handle)
         {
@@ -134,19 +159,18 @@ public:
         void await_resume()
         {}
         channel<Type>& channel_;
+        std::optional<Type> data_;
         std::coroutine_handle<> handle_{};
     };
 
     async_send send(const Type& type)
     {
-        fifo_.push_back(type);
-        return async_send{*this};
+        return async_send{*this, Type{type}};
     }
 
     async_send send(Type&& type)
     {
-        fifo_.push_back(std::move(type));
-        return async_send{*this};
+        return async_send{*this, std::move(type)};
     }
 
     void close()
@@ -171,13 +195,14 @@ public:
 private:
     bool full()
     {
-        return fifo_.size() < buffer_size_;
+        return fifo_.size() >= buffer_size_;
     }
 
     std::size_t buffer_size_;
     FIFOList<async_recv> receivers_{};
     FIFOList<async_send> senders_{};
-    std::list<Type> fifo_{};
+    FIFOList<async_send> consumeds_{};
+    std::deque<Type> fifo_{};
     bool closed_{false};
 };
 
@@ -239,8 +264,11 @@ int main()
     auto rc1 = wrapper(chan);
     auto rc2 = recv2(chan);
     auto sc = send(chan);
+    std::cout << "rc1::sync_await\n";
     rc1.sync_await();
+    std::cout << "rc2::sync_await\n";
     rc2.sync_await();
+    std::cout << "sc::sync_await\n";
     sc.sync_await();
     std::cout << __LINE__ << ": sync_await\n";
     chan.sync_await();
