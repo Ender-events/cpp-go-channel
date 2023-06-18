@@ -4,6 +4,7 @@
 #include <deque>
 #include <iostream>
 #include <iterator>
+#include <memory>
 #include <source_location>
 #include <stdexcept>
 #include <string_view>
@@ -40,7 +41,7 @@ public:
         }
     }
 
-    T* pop()
+    auto pop() -> T*
     {
         if (head == nullptr)
         {
@@ -58,7 +59,7 @@ public:
         return elem;
     }
 
-    bool empty()
+    auto empty() -> bool
     {
         return head == nullptr;
     }
@@ -79,11 +80,11 @@ public:
         async_recv(channel<Type>& channel) : channel_{channel}
         {}
 
-        bool await_ready() const
+        [[nodiscard]] auto await_ready() const -> bool
         {
             return !channel_.fifo_.empty() || !channel_.senders_.empty();
         }
-        std::coroutine_handle<> await_suspend(std::coroutine_handle<> handle)
+        auto await_suspend(std::coroutine_handle<> handle) -> std::coroutine_handle<>
         {
             handle_ = handle;
             channel_.receivers_.push(this);
@@ -103,17 +104,17 @@ public:
         {
             if (!channel_.fifo_.empty())
             {
-                Type t = std::move(channel_.fifo_.front());
+                Type data = std::move(channel_.fifo_.front());
                 channel_.fifo_.pop_front();
-                return std::make_tuple(std::move(t), true);
+                return std::make_tuple(std::move(data), true);
             }
             if (!channel_.senders_.empty())
             {
                 auto send = channel_.senders_.pop();
-                Type t = std::move(send->data_.value());
+                Type data = std::move(send->data_.value());
                 send->data_.reset();
                 channel_.consumeds_.push(send);
-                return std::make_tuple(std::move(t), true);
+                return std::make_tuple(std::move(data), true);
             }
             if (!channel_.closed_)
             {
@@ -125,7 +126,7 @@ public:
         channel<Type>& channel_;
         std::coroutine_handle<> handle_{};
     };
-    async_recv recv()
+    auto recv() -> async_recv
     {
         return async_recv{*this};
     }
@@ -135,7 +136,7 @@ public:
         async_send(channel<Type>& channel, Type&& data) : channel_{channel}, data_{std::move(data)}
         {}
 
-        bool await_ready()
+        auto await_ready() -> bool
         {
             if (channel_.full())
             {
@@ -145,7 +146,7 @@ public:
             data_.reset();
             return true;
         }
-        std::coroutine_handle<> await_suspend(std::coroutine_handle<> handle)
+        auto await_suspend(std::coroutine_handle<> handle) -> std::coroutine_handle<>
         {
             handle_ = handle;
             channel_.senders_.push(this);
@@ -163,12 +164,12 @@ public:
         std::coroutine_handle<> handle_{};
     };
 
-    async_send send(const Type& type)
+    auto send(const Type& type) -> async_send
     {
         return async_send{*this, Type{type}};
     }
 
-    async_send send(Type&& type)
+    auto send(Type&& type) -> async_send
     {
         return async_send{*this, std::move(type)};
     }
@@ -193,7 +194,7 @@ public:
     }
 
 private:
-    bool full()
+    auto full() -> bool
     {
         return fifo_.size() >= buffer_size_;
     }
@@ -206,64 +207,68 @@ private:
     bool closed_{false};
 };
 
-std::lazy<void> recv1(channel<int>& chan)
+auto recv1(std::shared_ptr<channel<int>> chan) -> std::lazy<void>
 {
     std::cout << "recv1: begin\n";
     while (true)
     {
-        auto&& [a, ok] = co_await chan.recv();
+        auto&& [a, ok] = co_await chan->recv();
         if (!ok)
+        {
             break;
+        }
         std::cout << "recv1: " << a << "\n";
     }
     std::cout << "recv1: end\n";
     co_return;
 };
 
-std::lazy<void> wrapper(channel<int>& chan)
+auto wrapper(std::shared_ptr<channel<int>> chan) -> std::lazy<void>
 {
     std::cout << "wrapper: begin\n";
     co_await recv1(chan);
     std::cout << "wrapper: end\n";
 }
 
-std::lazy<void> recv2(channel<int>& chan)
+auto recv2(std::shared_ptr<channel<int>> chan) -> std::lazy<void>
 {
     std::cout << "recv2: begin\n";
     while (true)
     {
-        auto&& [a, ok] = co_await chan.recv();
+        auto&& [a, ok] = co_await chan->recv();
         if (!ok)
+        {
             break;
+        }
         std::cout << "recv2: " << a << "\n";
     }
     std::cout << "recv2: end\n";
     co_return;
 };
 
-std::lazy<void> send(channel<int>& chan)
+auto send(std::shared_ptr<channel<int>> chan) -> std::lazy<void>
 {
     std::cout << "send: begin\n";
     std::cout << "send: 0\n";
-    co_await chan.send(0);
+    co_await chan->send(0);
     std::cout << "send: 1\n";
-    co_await chan.send(1);
+    co_await chan->send(1);
     std::cout << "send: 2\n";
-    co_await chan.send(2);
+    co_await chan->send(2);
     std::cout << "send: 3\n";
-    co_await chan.send(3);
+    co_await chan->send(3);
     std::cout << "send: close\n";
-    chan.close();
+    chan->close();
     std::cout << "send: end\n";
     co_return;
 };
 
-int main()
+auto main() -> int
 {
-    channel<int> chan{};
+    auto chan = std::make_shared<channel<int>>();
     auto rc1 = wrapper(chan);
     auto rc2 = recv2(chan);
-    auto sc = send(chan);
+    auto sc = send(chan); // NOLINT(readability-identifier-length)
     std::cout << "rc1::sync_await\n";
     rc1.sync_await();
     std::cout << "rc2::sync_await\n";
@@ -271,7 +276,7 @@ int main()
     std::cout << "sc::sync_await\n";
     sc.sync_await();
     std::cout << __LINE__ << ": sync_await\n";
-    chan.sync_await();
+    chan->sync_await();
     std::cout << "auto coro handle destroy because promise_type::final_suspend return "
                  "std::suspend_never\n";
 }

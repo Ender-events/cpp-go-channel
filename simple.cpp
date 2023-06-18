@@ -3,6 +3,7 @@
 #include <iostream>
 #include <iterator>
 #include <list>
+#include <memory>
 #include <source_location>
 #include <string_view>
 #include <tuple>
@@ -17,7 +18,7 @@ public:
     struct async_recv
     {
         channel<Type>& channel_;
-        bool await_ready() const
+        [[nodiscard]] auto await_ready() const -> bool
         {
             return !channel_.fifo_.empty();
         }
@@ -32,13 +33,13 @@ public:
                 return std::make_tuple(Type{}, false);
             }
             --channel_.receivers_;
-            Type t = std::move(channel_.fifo_.front());
+            Type data = std::move(channel_.fifo_.front());
             channel_.fifo_.pop_front();
-            return std::make_tuple(std::move(t), true);
+            return std::make_tuple(std::move(data), true);
         }
         std::coroutine_handle<> handle_{};
     };
-    async_recv recv()
+    auto recv() -> async_recv
     {
         ++receivers_;
         return async_recv{*this};
@@ -47,7 +48,7 @@ public:
     struct async_send
     {
         channel<Type>& channel_;
-        bool await_ready() const
+        [[nodiscard]] auto await_ready() const -> bool
         {
             return channel_.fifo_.size() < channel_.buffer_size_ + channel_.receivers_;
         }
@@ -60,13 +61,13 @@ public:
         std::coroutine_handle<> handle_{};
     };
 
-    async_send send(const Type& type)
+    auto send(const Type& type) -> async_send
     {
         fifo_.push_back(type);
         return async_send{*this};
     }
 
-    async_send send(Type&& type)
+    auto send(Type&& type) -> async_send
     {
         fifo_.push_back(std::move(type));
         return async_send{*this};
@@ -88,15 +89,15 @@ struct continuable
 {
     struct promise_type
     {
-        continuable get_return_object()
+        auto get_return_object() -> continuable
         {
             return {std::coroutine_handle<promise_type>::from_promise(*this)};
         }
-        std::suspend_never initial_suspend()
+        auto initial_suspend() -> std::suspend_never
         {
             return {};
         }
-        std::suspend_never final_suspend() noexcept
+        auto final_suspend() noexcept -> std::suspend_never
         {
             return {};
         }
@@ -112,57 +113,61 @@ class io_polling
 {
 };
 
-continuable recv1(channel<int>& chan)
+auto recv1(std::shared_ptr<channel<int>> chan) -> continuable
 {
     std::cout << "recv1: begin\n";
     while (true)
     {
-        auto&& [a, ok] = co_await chan.recv();
+        auto&& [a, ok] = co_await chan->recv();
         if (!ok)
+        {
             break;
+        }
         std::cout << "recv1: " << a << "\n";
     }
     std::cout << "recv1: end\n";
     co_return;
 };
 
-continuable recv2(channel<int>& chan)
+auto recv2(std::shared_ptr<channel<int>> chan) -> continuable
 {
     std::cout << "recv2: begin\n";
     while (true)
     {
-        auto&& [a, ok] = co_await chan.recv();
+        auto&& [a, ok] = co_await chan->recv();
         if (!ok)
+        {
             break;
+        }
         std::cout << "recv2: " << a << "\n";
     }
     std::cout << "recv2: end\n";
     co_return;
 };
 
-continuable send(channel<int>& chan)
+auto send(std::shared_ptr<channel<int>> chan) -> continuable
 {
     std::cout << "send: begin\n";
     std::cout << "send: 0\n";
-    co_await chan.send(0);
+    co_await chan->send(0);
     std::cout << "send: 1\n";
-    co_await chan.send(1);
+    co_await chan->send(1);
     std::cout << "send: 2\n";
-    co_await chan.send(2);
+    co_await chan->send(2);
     std::cout << "send: 3\n";
-    co_await chan.send(3);
+    co_await chan->send(3);
     std::cout << "send: close\n";
-    chan.close();
+    chan->close();
     std::cout << "send: end\n";
     co_return;
 };
 
-int main()
+auto main() -> int
 {
-    channel<int> chan{};
+    auto chan = std::make_shared<channel<int>>();
     auto rc1 = recv1(chan);
     auto rc2 = recv2(chan);
-    auto sc = send(chan);
+    auto sc = send(chan); // NOLINT(readability-identifier-length)
     std::cout << __LINE__ << ": resume recv1\n";
     rc1.handle_.resume();
     std::cout << __LINE__ << ": resume send\n";
