@@ -4,6 +4,7 @@
 #include <deque>
 #include <iostream>
 #include <iterator>
+#include <list>
 #include <memory>
 #include <source_location>
 #include <stdexcept>
@@ -59,7 +60,7 @@ public:
         return elem;
     }
 
-    auto empty() -> bool
+    [[nodiscard]] auto empty() const -> bool
     {
         return head == nullptr;
     }
@@ -179,12 +180,27 @@ public:
         closed_ = true;
     }
 
+    [[nodiscard]] auto closed() const -> bool
+    {
+        return closed_;
+    }
+
+    [[nodiscard]] auto empty() const -> bool
+    {
+        return closed_ && receivers_.empty() && senders_.empty() && consumeds_.empty();
+    }
+
     void sync_await()
     {
         while ((closed_ || !fifo_.empty()) && !receivers_.empty())
         {
             auto recv = receivers_.pop();
             recv->handle_.resume();
+        }
+        while (!consumeds_.empty())
+        {
+            auto send = consumeds_.pop();
+            send->handle_.resume();
         }
         while ((closed_ || !full()) && !senders_.empty())
         {
@@ -263,7 +279,69 @@ auto send(std::shared_ptr<channel<int>> chan) -> std::lazy<void>
     co_return;
 };
 
-auto main() -> int
+auto tick(std::shared_ptr<channel<int>> tick, std::shared_ptr<channel<int>> tack) -> std::lazy<void>
+{
+    while (true)
+    {
+        auto&& [a, ok] = co_await tick->recv();
+        if (!ok)
+        {
+            tack->close();
+            std::cout << "tack closed\n";
+            break;
+        }
+        std::cout << "tick: " << a << "\n";
+        co_await tack->send(a);
+    }
+}
+
+auto tack(std::shared_ptr<channel<int>> tick, std::shared_ptr<channel<int>> tack) -> std::lazy<void>
+{
+    co_await tick->send(0);
+    while (true)
+    {
+        auto&& [a, ok] = co_await tack->recv();
+        if (!ok)
+        {
+            break;
+        }
+        std::cout << "tack: " << a << "\n";
+        ++a;
+        if (a < 10)
+        {
+            co_await tick->send(a);
+        }
+        else
+        {
+            tick->close();
+            std::cout << "tick closed\n";
+        }
+    }
+}
+
+void ticktack()
+{
+    auto chan_tick = std::make_shared<channel<int>>();
+    auto chan_tack = std::make_shared<channel<int>>();
+    auto lazy_tick = tick(chan_tick, chan_tack);
+    auto lazy_tack = tack(chan_tick, chan_tack);
+    std::cout << "sync_await lazy_tick\n";
+    lazy_tick.sync_await();
+    std::cout << "sync_await lazy_tack\n";
+    lazy_tack.sync_await();
+    std::list<decltype(chan_tick)> chans{};
+    chans.push_back(chan_tick);
+    chans.push_back(chan_tack);
+    while (!chans.empty())
+    {
+        std::cout << " sync_await chans (" << chans.size() << ")\n";
+        for (const auto& chan : chans) { chan->sync_await(); }
+        chans.remove_if([](const auto& chan) { return chan->empty(); });
+    }
+    std::cout << "end ticktack\n";
+}
+
+void single_chan()
 {
     auto chan = std::make_shared<channel<int>>();
     auto rc1 = wrapper(chan);
@@ -279,4 +357,11 @@ auto main() -> int
     chan->sync_await();
     std::cout << "auto coro handle destroy because promise_type::final_suspend return "
                  "std::suspend_never\n";
+}
+
+auto main() -> int
+{
+    single_chan();
+    std::cout << "==========\n";
+    ticktack();
 }
