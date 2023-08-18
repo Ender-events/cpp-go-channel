@@ -355,8 +355,7 @@ void single_chan()
     sc.sync_await();
     std::cout << __LINE__ << ": sync_await\n";
     chan->sync_await();
-    std::cout << "auto coro handle destroy because promise_type::final_suspend return "
-                 "std::suspend_never\n";
+    std::cout << "auto coro handle destroy with lazy promise_type\n";
 }
 
 auto main() -> int
