@@ -94,11 +94,6 @@ public:
                 auto send = channel_.consumeds_.pop();
                 return send->handle_;
             }
-            if (!channel_.senders_.empty())
-            {
-                auto send = channel_.senders_.pop();
-                return send->handle_;
-            }
             return std::noop_coroutine();
         }
         auto await_resume()
@@ -292,6 +287,7 @@ auto tick(std::shared_ptr<channel<int>> tick, std::shared_ptr<channel<int>> tack
         }
         std::cout << "tick: " << a << "\n";
         co_await tack->send(a);
+        // in this demo tack chan->sync_await() resume here
     }
 }
 
@@ -310,6 +306,7 @@ auto tack(std::shared_ptr<channel<int>> tick, std::shared_ptr<channel<int>> tack
         if (a < 10)
         {
             co_await tick->send(a);
+            // in this demo tick chan->sync_await() resume here
         }
         else
         {
